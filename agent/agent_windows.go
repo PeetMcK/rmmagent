@@ -985,11 +985,11 @@ func (a *Agent) InstallNushell(force bool) {
 		case "windows":
 			switch runtime.GOARCH {
 			case "amd64":
-				// https://github.com/nushell/nushell/releases/download/0.87.0/nu-0.87.0-x86_64-windows-msvc-full.zip
-				assetName = fmt.Sprintf("nu-%s-x86_64-windows-msvc-full.zip", conf.InstallNushellVersion)
+				// https://github.com/nushell/nushell/releases/download/0.106.1/nu-0.106.1-x86_64-pc-windows-msvc.zip
+				assetName = fmt.Sprintf("nu-%s-x86_64-pc-windows-msvc.zip", conf.InstallNushellVersion)
 			case "arm64":
-				// https://github.com/nushell/nushell/releases/download/0.87.0/nu-0.87.0-aarch64-windows-msvc-full.zip
-				assetName = fmt.Sprintf("nu-%s-aarch64-windows-msvc-full.zip", conf.InstallNushellVersion)
+				// https://github.com/nushell/nushell/releases/download/0.106.1/nu-0.106.1-aarch64-pc-windows-msvc.zip
+				assetName = fmt.Sprintf("nu-%s-aarch64-pc-windows-msvc.zip", conf.InstallNushellVersion)
 			default:
 				a.Logger.Debugln("InstallNushell(): Unsupported architecture and OS:", runtime.GOARCH, runtime.GOOS)
 				return

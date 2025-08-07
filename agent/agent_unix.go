@@ -665,8 +665,8 @@ func (a *Agent) InstallNushell(force bool) {
 		case "darwin":
 			switch runtime.GOARCH {
 			case "arm64":
-				// https://github.com/nushell/nushell/releases/download/0.87.0/nu-0.87.0-aarch64-darwin-full.tar.gz
-				assetName = fmt.Sprintf("nu-%s-aarch64-darwin-full.tar.gz", conf.InstallNushellVersion)
+				// https://github.com/nushell/nushell/releases/download/0.106.1/nu-0.106.1-aarch64-apple-darwin.tar.gz
+				assetName = fmt.Sprintf("nu-%s-aarch64-apple-darwin.tar.gz", conf.InstallNushellVersion)
 			default:
 				a.Logger.Debugln("InstallNushell(): Unsupported architecture and OS:", runtime.GOARCH, runtime.GOOS)
 				return
@@ -674,11 +674,11 @@ func (a *Agent) InstallNushell(force bool) {
 		case "linux":
 			switch runtime.GOARCH {
 			case "amd64":
-				// https://github.com/nushell/nushell/releases/download/0.87.0/nu-0.87.0-x86_64-linux-musl-full.tar.gz
-				assetName = fmt.Sprintf("nu-%s-x86_64-linux-musl-full.tar.gz", conf.InstallNushellVersion)
+				// https://github.com/nushell/nushell/releases/download/0.106.1/nu-0.106.1-x86_64-unknown-linux-musl.tar.gz
+				assetName = fmt.Sprintf("nu-%s-x86_64-unknown-linux-musl.tar.gz", conf.InstallNushellVersion)
 			case "arm64":
-				// https://github.com/nushell/nushell/releases/download/0.87.0/nu-0.87.0-aarch64-linux-gnu-full.tar.gz
-				assetName = fmt.Sprintf("nu-%s-aarch64-linux-gnu-full.tar.gz", conf.InstallNushellVersion)
+				// https://github.com/nushell/nushell/releases/download/0.106.1/nu-0.106.1-aarch64-unknown-linux-musl.tar.gz
+				assetName = fmt.Sprintf("nu-%s-aarch64-unknown-linux-musl.tar.gz", conf.InstallNushellVersion)
 			default:
 				a.Logger.Debugln("InstallNushell(): Unsupported architecture and OS:", runtime.GOARCH, runtime.GOOS)
 				return
