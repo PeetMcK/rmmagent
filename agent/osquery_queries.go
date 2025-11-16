@@ -221,6 +221,43 @@ SELECT interface, ssid, bssid, rssi, transmit_rate, channel, channel_band
 FROM wifi_status
 WHERE interface LIKE 'en%'
 `
+
+	// QueryBattery retrieves battery information (macOS laptops only)
+	QueryBattery = `
+SELECT
+    health,
+    condition,
+    cycle_count,
+    percent_remaining,
+    max_capacity,
+    designed_capacity,
+    state,
+    charging,
+    manufacturer,
+    model
+FROM battery
+`
+
+	// QueryFirewall retrieves Application Layer Firewall status (macOS)
+	QueryFirewall = `
+SELECT
+    global_state,
+    stealth_enabled,
+    logging_enabled
+FROM alf
+`
+
+	// QueryDiskEncryption retrieves FileVault encryption status (macOS)
+	QueryDiskEncryption = `
+SELECT
+    name,
+    uuid,
+    filevault_status,
+    encrypted,
+    encryption_status
+FROM disk_encryption
+WHERE name != ''
+`
 )
 
 // QueryDefinitions maps query names to SQL for easy lookup
@@ -240,4 +277,7 @@ var QueryDefinitions = map[string]string{
 	"default_gateway":      QueryDefaultGateway,
 	"dns":                  QueryDNS,
 	"wifi":                 QueryWiFi,
+	"battery":              QueryBattery,
+	"firewall":             QueryFirewall,
+	"disk_encryption":      QueryDiskEncryption,
 }

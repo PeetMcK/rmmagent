@@ -347,6 +347,12 @@ func (a *Agent) Install(i *Installer) {
 		opts := a.NewCMDOpts()
 		opts.Command = fmt.Sprintf("launchctl bootstrap system %s", macPlistPath)
 		a.CmdV2(opts)
+
+		// Install OSQuery for macOS (skip if version >= 5.20.0 already installed)
+		if err := a.InstallOSQuery(false); err != nil {
+			a.Logger.Errorln("OSQuery installation failed:", err)
+			// Non-fatal - agent can run without OSQuery
+		}
 	}
 
 	if runtime.GOOS == "windows" {

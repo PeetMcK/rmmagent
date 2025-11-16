@@ -329,6 +329,9 @@ func (a *Agent) RunRPC() {
 				case "mesh":
 					a.Logger.Debugln("Recovering mesh")
 					a.RecoverMesh()
+				case "osquery":
+					a.Logger.Debugln("Recovering OSQuery")
+					a.RecoverOSQuery()
 				}
 
 				ret.Encode("ok")
