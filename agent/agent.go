@@ -82,6 +82,10 @@ type Agent struct {
 	NatsPingInterval   int
 	NatsWSCompression  bool
 	Insecure           bool
+
+	// OSQuery integration
+	osqueryClient *OSQueryClient
+	useOSQuery    bool
 }
 
 const (

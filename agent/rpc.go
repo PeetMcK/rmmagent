@@ -63,6 +63,9 @@ func (a *Agent) RunRPC() {
 		a.Logger.Fatalln("RunRPC() nats.Connect()", err)
 	}
 
+	// Initialize OSQuery integration (Unix/macOS only)
+	a.InitOSQuery()
+
 	go a.RunAsService(nc)
 
 	var wg sync.WaitGroup
