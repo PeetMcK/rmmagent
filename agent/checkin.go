@@ -32,11 +32,33 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			Version: a.Version,
 		}
 	case "agent-winsvc":
+		// Try OSQuery first (for macOS/Linux), fall back to legacy
+		if a.useOSQuery {
+			if services, err := a.GetServicesOSQuery(); err == nil {
+				payload = services
+				break
+			} else {
+				a.Logger.Warnf("OSQuery agent-winsvc failed: %v, using legacy", err)
+			}
+		}
+
+		// Legacy fallback
 		payload = trmm.WinSvcNats{
 			Agentid: a.AgentID,
 			WinSvcs: a.GetServices(),
 		}
 	case "agent-agentinfo":
+		// Try OSQuery first, fall back to legacy
+		if a.useOSQuery {
+			if info, err := a.GetAgentInfoOSQuery(); err == nil {
+				payload = info
+				break
+			} else {
+				a.Logger.Warnf("OSQuery agent-agentinfo failed: %v, using legacy", err)
+			}
+		}
+
+		// Legacy fallback
 		osinfo := a.osString()
 		reboot, err := a.SystemRebootRequired()
 		if err != nil {
@@ -59,6 +81,17 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			WMI:     a.GetWMIInfo(),
 		}
 	case "agent-disks":
+		// Try OSQuery first, fall back to legacy
+		if a.useOSQuery {
+			if disks, err := a.GetDisksOSQuery(); err == nil {
+				payload = disks
+				break
+			} else {
+				a.Logger.Warnf("OSQuery agent-disks failed: %v, using legacy", err)
+			}
+		}
+
+		// Legacy fallback
 		payload = trmm.WinDisksNats{
 			Agentid: a.AgentID,
 			Disks:   a.GetDisks(),

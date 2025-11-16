@@ -41,6 +41,61 @@ import (
 	"golang.org/x/text/language"
 )
 
+// getMacMarketingName returns the marketing name for a Mac model identifier
+func getMacMarketingName(modelID string) string {
+	// Map of model identifiers to marketing names
+	// Updated as of 2023 - add new models as needed
+	marketingNames := map[string]string{
+		// MacBook Air M2 (2022-2023)
+		"Mac14,2":  "MacBook Air - 13-inch, M2, 2022",
+		"Mac14,15": "MacBook Air - 15-inch, M2, 2023",
+
+		// MacBook Air M3 (2024)
+		"Mac15,12": "MacBook Air - 13-inch, M3, 2024",
+		"Mac15,13": "MacBook Air - 15-inch, M3, 2024",
+
+		// MacBook Pro 13-inch M2 (2022)
+		"Mac14,7": "MacBook Pro - 13-inch, M2, 2022",
+
+		// MacBook Pro 14-inch M2 (2023)
+		"Mac14,9":  "MacBook Pro - 14-inch, M2 Pro, 2023",
+		"Mac14,5":  "MacBook Pro - 14-inch, M2 Max, 2023",
+
+		// MacBook Pro 16-inch M2 (2023)
+		"Mac14,10": "MacBook Pro - 16-inch, M2 Pro, 2023",
+		"Mac14,6":  "MacBook Pro - 16-inch, M2 Max, 2023",
+
+		// MacBook Pro 14-inch M3 (2023)
+		"Mac15,3":  "MacBook Pro - 14-inch, M3, 2023",
+		"Mac15,6":  "MacBook Pro - 14-inch, M3 Pro, 2023",
+		"Mac15,10": "MacBook Pro - 14-inch, M3 Max, 2023",
+
+		// MacBook Pro 16-inch M3 (2023)
+		"Mac15,7":  "MacBook Pro - 16-inch, M3 Pro, 2023",
+		"Mac15,11": "MacBook Pro - 16-inch, M3 Max, 2023",
+
+		// Mac mini M2 (2023)
+		"Mac14,3":  "Mac mini - M2, 2023",
+		"Mac14,12": "Mac mini - M2 Pro, 2023",
+
+		// Mac Studio M2 (2023)
+		"Mac14,13": "Mac Studio - M2 Max, 2023",
+		"Mac14,14": "Mac Studio - M2 Ultra, 2023",
+
+		// iMac 24-inch M3 (2023)
+		"Mac15,4": "iMac - 24-inch, M3, 2023",
+		"Mac15,5": "iMac - 24-inch, M3, 2023",
+
+		// Mac Pro M2 (2023)
+		"Mac14,8": "Mac Pro - M2 Ultra, 2023",
+	}
+
+	if name, ok := marketingNames[modelID]; ok {
+		return name
+	}
+	return ""
+}
+
 func ShowStatus(version string) {
 	fmt.Println(version)
 }
@@ -447,33 +502,110 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	cpus := make([]string, 0)
 	gpus := make([]string, 0)
 
-	// local ips
-	host, err := ps.Host()
-	if err != nil {
-		a.Logger.Errorln("GetWMIInfo() ps.Host()", err)
-	} else {
-		for _, ip := range host.Info().IPs {
-			if strings.Contains(ip, "127.0.") || strings.Contains(ip, "::1/128") {
-				continue
+	// local ips - use OSQuery if available, fallback to ps.Host()
+	if a.osqueryClient != nil {
+		// Query network interfaces via OSQuery
+		interfacesResults, err1 := a.osqueryClient.Query(QueryNetworkInterfaces)
+		addressesResults, err2 := a.osqueryClient.Query(QueryInterfaceAddresses)
+		gatewayResults, err3 := a.osqueryClient.Query(QueryDefaultGateway)
+		dnsResults, err4 := a.osqueryClient.Query(QueryDNS)
+		wifiResults, _ := a.osqueryClient.Query(QueryWiFi) // WiFi may not be available
+
+		if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+			_, allIPsArray, err := a.TransformNetworkInterfaces(
+				interfacesResults,
+				addressesResults,
+				gatewayResults,
+				dnsResults,
+				wifiResults,
+			)
+			if err == nil && len(allIPsArray) > 0 {
+				ips = allIPsArray
 			}
-			ips = append(ips, ip)
+		}
+	}
+
+	// Fallback to ps.Host() if OSQuery failed or not available
+	if len(ips) == 0 {
+		host, err := ps.Host()
+		if err != nil {
+			a.Logger.Errorln("GetWMIInfo() ps.Host()", err)
+		} else {
+			for _, ip := range host.Info().IPs {
+				if strings.Contains(ip, "127.0.") || strings.Contains(ip, "::1/128") {
+					continue
+				}
+				ips = append(ips, ip)
+			}
 		}
 	}
 	wmiInfo["local_ips"] = ips
 
 	// disks
-	block, err := ghw.Block(ghw.WithDisableWarnings())
-	ignore := []string{"ram", "loop"}
-	if err != nil {
-		a.Logger.Errorln("ghw.Block()", err)
-	} else {
-		for _, disk := range block.Disks {
-			if disk.IsRemovable || contains(disk.Name, ignore) {
-				continue
+	if runtime.GOOS == "darwin" {
+		// macOS: Use diskutil to get physical disks only
+		opts := a.NewCMDOpts()
+		opts.Command = "diskutil list physical | grep -E '^\\/dev\\/disk[0-9]+ \\(internal, physical\\):'"
+		diskListOut := a.CmdV2(opts)
+
+		lines := strings.Split(diskListOut.Stdout, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "/dev/disk") && strings.Contains(line, "internal, physical") {
+				// Extract disk name (e.g., "disk0")
+				parts := strings.Fields(line)
+				if len(parts) > 0 {
+					diskName := strings.TrimPrefix(parts[0], "/dev/")
+
+					// Get disk info from diskutil
+					opts3 := a.NewCMDOpts()
+					opts3.Command = fmt.Sprintf("diskutil info %s", diskName)
+					diskInfo := a.CmdV2(opts3)
+
+					var deviceName, diskSize string
+					infoLines := strings.Split(diskInfo.Stdout, "\n")
+					for _, infoLine := range infoLines {
+						if strings.Contains(infoLine, "Device / Media Name:") {
+							parts := strings.Split(infoLine, ":")
+							if len(parts) >= 2 {
+								deviceName = strings.TrimSpace(parts[1])
+							}
+						}
+						if strings.Contains(infoLine, "Disk Size:") {
+							parts := strings.Split(infoLine, ":")
+							if len(parts) >= 2 {
+								// Extract size from format like "1.0 TB (1000204886016 Bytes)"
+								sizePart := strings.TrimSpace(parts[1])
+								if strings.Contains(sizePart, "(") {
+									diskSize = strings.Split(sizePart, "(")[0]
+									diskSize = strings.TrimSpace(diskSize)
+								}
+							}
+						}
+					}
+
+					if deviceName != "" && diskSize != "" {
+						disks = append(disks, fmt.Sprintf("%s %s", deviceName, diskSize))
+					} else if diskSize != "" {
+						disks = append(disks, fmt.Sprintf("Internal SSD %s", diskSize))
+					}
+				}
 			}
-			ret := fmt.Sprintf("%s %s %s %s %s %s", disk.Vendor, disk.Model, disk.StorageController, disk.DriveType, disk.Name, ByteCountSI(disk.SizeBytes))
-			ret = strings.TrimSpace(strings.ReplaceAll(ret, "unknown", ""))
-			disks = append(disks, ret)
+		}
+	} else {
+		// Linux: Use ghw library
+		block, err := ghw.Block(ghw.WithDisableWarnings())
+		ignore := []string{"ram", "loop"}
+		if err != nil {
+			a.Logger.Errorln("ghw.Block()", err)
+		} else {
+			for _, disk := range block.Disks {
+				if disk.IsRemovable || contains(disk.Name, ignore) {
+					continue
+				}
+				ret := fmt.Sprintf("%s %s %s %s %s %s", disk.Vendor, disk.Model, disk.StorageController, disk.DriveType, disk.Name, ByteCountSI(disk.SizeBytes))
+				ret = strings.TrimSpace(strings.ReplaceAll(ret, "unknown", ""))
+				disks = append(disks, ret)
+			}
 		}
 	}
 	wmiInfo["disks"] = disks
@@ -503,10 +635,65 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	}
 
 	if runtime.GOOS == "darwin" {
+		// Get friendly Mac model name and chip
 		opts := a.NewCMDOpts()
-		opts.Command = "sysctl hw.model"
+		opts.Command = "system_profiler SPHardwareDataType"
 		out := a.CmdV2(opts)
-		wmiInfo["make_model"] = strings.ReplaceAll(out.Stdout, "hw.model: ", "")
+
+		var modelName, modelIdentifier, chip, coreInfo string
+		lines := strings.Split(out.Stdout, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Model Name:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					modelName = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.Contains(line, "Model Identifier:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					modelIdentifier = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.Contains(line, "Chip:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					chip = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.Contains(line, "Total Number of Cores:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					fullCoreInfo := strings.TrimSpace(parts[1])
+					// Extract just the number before any parentheses
+					// e.g. "8 (4 performance and 4 efficiency)" -> "8"
+					if idx := strings.Index(fullCoreInfo, "("); idx > 0 {
+						coreInfo = strings.TrimSpace(fullCoreInfo[:idx])
+					} else {
+						coreInfo = fullCoreInfo
+					}
+				}
+			}
+		}
+
+		// Append core info to chip name if available
+		if chip != "" && coreInfo != "" {
+			chip = fmt.Sprintf("%s (%s core CPU)", chip, coreInfo)
+		}
+
+		// Try to get marketing name from model identifier
+		marketingName := getMacMarketingName(modelIdentifier)
+
+		if marketingName != "" {
+			wmiInfo["make_model"] = marketingName
+		} else if modelName != "" && chip != "" {
+			wmiInfo["make_model"] = fmt.Sprintf("%s - %s", modelName, chip)
+		} else if modelName != "" {
+			wmiInfo["make_model"] = modelName
+		} else {
+			// Fallback to model identifier
+			wmiInfo["make_model"] = modelIdentifier
+		}
 	}
 
 	// gfx cards
@@ -523,6 +710,48 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 
 		}
 	}
+
+	// macOS: Get GPU core count from system_profiler
+	if runtime.GOOS == "darwin" && len(gpus) == 0 {
+		opts := a.NewCMDOpts()
+		opts.Command = "system_profiler SPDisplaysDataType"
+		out := a.CmdV2(opts)
+
+		var gpuName, gpuCores string
+		lines := strings.Split(out.Stdout, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "Chipset Model:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					gpuName = strings.TrimSpace(parts[1])
+				}
+			}
+			if strings.Contains(line, "Total Number of Cores:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					gpuCores = strings.TrimSpace(parts[1])
+				}
+				// Break after finding cores (assuming cores come after chipset)
+				if gpuName != "" && gpuCores != "" {
+					break
+				}
+			}
+			// Also check if this is a section header like "Apple M2:"
+			if strings.Contains(line, ":") && i > 0 {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "Apple M") && strings.HasSuffix(trimmed, ":") {
+					gpuName = strings.TrimSuffix(trimmed, ":")
+				}
+			}
+		}
+
+		if gpuName != "" && gpuCores != "" {
+			gpus = append(gpus, fmt.Sprintf("%s (%s Core GPU)", gpuName, gpuCores))
+		} else if gpuCores != "" {
+			gpus = append(gpus, fmt.Sprintf("%s Core GPU", gpuCores))
+		}
+	}
+
 	wmiInfo["gpus"] = gpus
 
 	// temp hack for ARM cpu/make/model if rasp pi
@@ -900,10 +1129,128 @@ func (a *Agent) GetAgentCheckInConfig(ret AgentCheckInConfig) AgentCheckInConfig
 	return ret
 }
 
+// InitOSQuery initializes the OSQuery client for Unix systems
+func (a *Agent) InitOSQuery() error {
+	a.Logger.Info("Initializing OSQuery integration...")
+
+	// Create OSQuery client pointing to tactical socket
+	socketPath := "/var/tacticalosquery/osquery.em"
+	a.osqueryClient = NewOSQueryClient(socketPath, a)
+
+	// Test connection
+	if err := a.osqueryClient.Connect(); err != nil {
+		a.Logger.Warnf("OSQuery connection failed: %v - using legacy methods", err)
+		a.useOSQuery = false
+		return nil // Don't fail agent startup
+	}
+
+	// Test ping
+	if err := a.osqueryClient.Ping(); err != nil {
+		a.Logger.Warnf("OSQuery ping failed: %v - using legacy methods", err)
+		a.useOSQuery = false
+		return nil
+	}
+
+	a.useOSQuery = true
+	a.Logger.Info("OSQuery integration enabled")
+
+	return nil
+}
+
 // windows only below TODO add into stub file
 func (a *Agent) PlatVer() (string, error) { return "", nil }
 
-func (a *Agent) SendSoftware() {}
+func (a *Agent) SendSoftware() {
+	if !a.useOSQuery {
+		a.Logger.Info("OSQuery not available, skipping software sync")
+		return
+	}
+
+	a.Logger.Info("Starting software sync via OSQuery...")
+
+	// Get software via OSQuery
+	sw, err := a.GetInstalledSoftwareOSQuery()
+	if err != nil {
+		a.Logger.Warnf("Failed to get software via OSQuery: %v", err)
+		return
+	}
+
+	a.Logger.Infof("Collected %d software items, sending to server", len(sw))
+
+	// Send to server via REST API
+	payload := map[string]interface{}{
+		"agent_id": a.AgentID,
+		"software": sw,
+	}
+
+	_, err = a.rClient.R().SetBody(payload).Post("/api/v3/software/")
+	if err != nil {
+		a.Logger.Warnf("Software sync error: %v", err)
+	} else {
+		a.Logger.Info("Software sync successful")
+	}
+}
+
+// GetAgentInfoOSQuery retrieves system info via OSQuery
+func (a *Agent) GetAgentInfoOSQuery() (*trmm.AgentInfoNats, error) {
+	results, err := a.osqueryClient.Query(QuerySystemInfo)
+	if err != nil {
+		return nil, err
+	}
+	return a.TransformSystemInfo(results)
+}
+
+// GetDisksOSQuery retrieves disk info via OSQuery
+func (a *Agent) GetDisksOSQuery() (*trmm.WinDisksNats, error) {
+	results, err := a.osqueryClient.Query(QueryDisks)
+	if err != nil {
+		return nil, err
+	}
+	return a.TransformDisks(results)
+}
+
+// GetServicesOSQuery retrieves services via OSQuery
+func (a *Agent) GetServicesOSQuery() (*trmm.WinSvcNats, error) {
+	var query string
+	if runtime.GOOS == "darwin" {
+		query = QueryServicesMacOS
+	} else {
+		query = QueryServicesLinux
+	}
+
+	results, err := a.osqueryClient.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	return a.TransformServices(results)
+}
+
+// GetInstalledSoftwareOSQuery retrieves software inventory via OSQuery
+func (a *Agent) GetInstalledSoftwareOSQuery() ([]trmm.WinSoftwareList, error) {
+	var query string
+
+	// Platform-specific query selection
+	if runtime.GOOS == "darwin" {
+		query = QuerySoftwareMacOS
+	} else {
+		// Try Debian packages first
+		query = QuerySoftwareDebianLinux
+		results, err := a.osqueryClient.Query(query)
+		if err != nil || len(results) == 0 {
+			// Fall back to RPM if deb fails
+			query = QuerySoftwareRPMLinux
+		}
+	}
+
+	// Execute query
+	results, err := a.osqueryClient.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("software query failed: %w", err)
+	}
+
+	// Transform results
+	return a.TransformSoftware(results)
+}
 
 func (a *Agent) UninstallCleanup() {}
 

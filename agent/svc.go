@@ -94,9 +94,18 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	go a.SyncMeshNodeID()
 
 	time.Sleep(time.Duration(randRange(1, 3)) * time.Second)
+
+	a.Logger.Infof("Starting service loop (GOOS=%s, LimitData=%v)", runtime.GOOS, conf.LimitData)
+
 	if runtime.GOOS == "windows" && !conf.LimitData {
 		a.AgentStartup()
 		a.SendSoftware()
+	} else if !conf.LimitData {
+		// Send software on startup for non-Windows platforms too
+		a.Logger.Info("Calling SendSoftware on startup for non-Windows platform")
+		a.SendSoftware()
+	} else {
+		a.Logger.Info("Skipping SendSoftware on startup (LimitData=true)")
 	}
 
 	checkInHelloTicker := time.NewTicker(time.Duration(conf.Hello) * time.Second)
