@@ -610,18 +610,52 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	}
 	wmiInfo["disks"] = disks
 
-	// cpus
-	cpuInfo, err := cpu.Info()
-	if err != nil {
-		a.Logger.Errorln("cpu.Info()", err)
+	// Query OSQuery for system_info if available (CPU, model, serial, cores)
+	var systemInfoResult map[string]string
+	var osVersionResult map[string]string
+	osqueryAvailable := false
+
+	if a.osqueryClient != nil {
+		systemInfoResults, err1 := a.osqueryClient.Query(QuerySystemInfo)
+		osVersionResults, err2 := a.osqueryClient.Query(QueryOSVersion)
+
+		if err1 == nil && len(systemInfoResults) > 0 {
+			systemInfoResult = systemInfoResults[0]
+			osqueryAvailable = true
+		}
+		if err2 == nil && len(osVersionResults) > 0 {
+			osVersionResult = osVersionResults[0]
+		}
+	}
+
+	// cpus - use OSQuery if available, fallback to gopsutil
+	if osqueryAvailable && systemInfoResult["cpu_brand"] != "" {
+		cpus = append(cpus, systemInfoResult["cpu_brand"])
 	} else {
-		if len(cpuInfo) > 0 {
-			if cpuInfo[0].ModelName != "" {
-				cpus = append(cpus, cpuInfo[0].ModelName)
+		// Fallback to gopsutil
+		cpuInfo, err := cpu.Info()
+		if err != nil {
+			a.Logger.Errorln("cpu.Info()", err)
+		} else {
+			if len(cpuInfo) > 0 {
+				if cpuInfo[0].ModelName != "" {
+					cpus = append(cpus, cpuInfo[0].ModelName)
+				}
 			}
 		}
 	}
 	wmiInfo["cpus"] = cpus
+
+	// cpu_cores - add physical and logical core counts (OSQuery only)
+	if osqueryAvailable {
+		wmiInfo["cpu_physical_cores"] = systemInfoResult["cpu_physical_cores"]
+		wmiInfo["cpu_logical_cores"] = systemInfoResult["cpu_logical_cores"]
+	}
+
+	// os_build - add OS build number (OSQuery only)
+	if osVersionResult != nil && osVersionResult["build"] != "" {
+		wmiInfo["os_build"] = osVersionResult["build"]
+	}
 
 	// make/model
 	wmiInfo["make_model"] = ""
@@ -635,64 +669,84 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	}
 
 	if runtime.GOOS == "darwin" {
-		// Get friendly Mac model name and chip
-		opts := a.NewCMDOpts()
-		opts.Command = "system_profiler SPHardwareDataType"
-		out := a.CmdV2(opts)
+		// Use OSQuery if available, fallback to system_profiler
+		if osqueryAvailable && systemInfoResult["hardware_model"] != "" {
+			modelIdentifier := systemInfoResult["hardware_model"]
 
-		var modelName, modelIdentifier, chip, coreInfo string
-		lines := strings.Split(out.Stdout, "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "Model Name:") {
-				parts := strings.Split(line, ":")
-				if len(parts) >= 2 {
-					modelName = strings.TrimSpace(parts[1])
+			// Try to get marketing name from model identifier
+			marketingName := getMacMarketingName(modelIdentifier)
+
+			if marketingName != "" {
+				wmiInfo["make_model"] = marketingName
+			} else {
+				// Fallback: use vendor + model
+				vendor := systemInfoResult["hardware_vendor"]
+				if vendor != "" {
+					wmiInfo["make_model"] = fmt.Sprintf("%s %s", vendor, modelIdentifier)
+				} else {
+					wmiInfo["make_model"] = modelIdentifier
 				}
 			}
-			if strings.Contains(line, "Model Identifier:") {
-				parts := strings.Split(line, ":")
-				if len(parts) >= 2 {
-					modelIdentifier = strings.TrimSpace(parts[1])
+		} else {
+			// Fallback to system_profiler if OSQuery unavailable
+			opts := a.NewCMDOpts()
+			opts.Command = "system_profiler SPHardwareDataType"
+			out := a.CmdV2(opts)
+
+			var modelName, modelIdentifier, chip, coreInfo string
+			lines := strings.Split(out.Stdout, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "Model Name:") {
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						modelName = strings.TrimSpace(parts[1])
+					}
 				}
-			}
-			if strings.Contains(line, "Chip:") {
-				parts := strings.Split(line, ":")
-				if len(parts) >= 2 {
-					chip = strings.TrimSpace(parts[1])
+				if strings.Contains(line, "Model Identifier:") {
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						modelIdentifier = strings.TrimSpace(parts[1])
+					}
 				}
-			}
-			if strings.Contains(line, "Total Number of Cores:") {
-				parts := strings.Split(line, ":")
-				if len(parts) >= 2 {
-					fullCoreInfo := strings.TrimSpace(parts[1])
-					// Extract just the number before any parentheses
-					// e.g. "8 (4 performance and 4 efficiency)" -> "8"
-					if idx := strings.Index(fullCoreInfo, "("); idx > 0 {
-						coreInfo = strings.TrimSpace(fullCoreInfo[:idx])
-					} else {
-						coreInfo = fullCoreInfo
+				if strings.Contains(line, "Chip:") {
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						chip = strings.TrimSpace(parts[1])
+					}
+				}
+				if strings.Contains(line, "Total Number of Cores:") {
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						fullCoreInfo := strings.TrimSpace(parts[1])
+						// Extract just the number before any parentheses
+						// e.g. "8 (4 performance and 4 efficiency)" -> "8"
+						if idx := strings.Index(fullCoreInfo, "("); idx > 0 {
+							coreInfo = strings.TrimSpace(fullCoreInfo[:idx])
+						} else {
+							coreInfo = fullCoreInfo
+						}
 					}
 				}
 			}
-		}
 
-		// Append core info to chip name if available
-		if chip != "" && coreInfo != "" {
-			chip = fmt.Sprintf("%s (%s core CPU)", chip, coreInfo)
-		}
+			// Append core info to chip name if available
+			if chip != "" && coreInfo != "" {
+				chip = fmt.Sprintf("%s (%s core CPU)", chip, coreInfo)
+			}
 
-		// Try to get marketing name from model identifier
-		marketingName := getMacMarketingName(modelIdentifier)
+			// Try to get marketing name from model identifier
+			marketingName := getMacMarketingName(modelIdentifier)
 
-		if marketingName != "" {
-			wmiInfo["make_model"] = marketingName
-		} else if modelName != "" && chip != "" {
-			wmiInfo["make_model"] = fmt.Sprintf("%s - %s", modelName, chip)
-		} else if modelName != "" {
-			wmiInfo["make_model"] = modelName
-		} else {
-			// Fallback to model identifier
-			wmiInfo["make_model"] = modelIdentifier
+			if marketingName != "" {
+				wmiInfo["make_model"] = marketingName
+			} else if modelName != "" && chip != "" {
+				wmiInfo["make_model"] = fmt.Sprintf("%s - %s", modelName, chip)
+			} else if modelName != "" {
+				wmiInfo["make_model"] = modelName
+			} else {
+				// Fallback to model identifier
+				wmiInfo["make_model"] = modelIdentifier
+			}
 		}
 	}
 
@@ -780,15 +834,21 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 			wmiInfo["serialnumber"] = baseboard.SerialNumber
 		}
 	case "darwin":
-		opts := a.NewCMDOpts()
-		serialCmd := `ioreg -l | grep IOPlatformSerialNumber | grep -o '"IOPlatformSerialNumber" = "[^"]*"' | awk -F'"' '{print $4}'`
-		opts.Command = serialCmd
-		out := a.CmdV2(opts)
-		if out.Status.Error != nil {
-			a.Logger.Debugln("ioreg get serial number: ", out.Status.Error.Error())
-			wmiInfo["serialnumber"] = "n/a"
+		// Use OSQuery if available, fallback to ioreg
+		if osqueryAvailable && systemInfoResult["hardware_serial"] != "" {
+			wmiInfo["serialnumber"] = systemInfoResult["hardware_serial"]
 		} else {
-			wmiInfo["serialnumber"] = removeNewlines(out.Stdout)
+			// Fallback to ioreg
+			opts := a.NewCMDOpts()
+			serialCmd := `ioreg -l | grep IOPlatformSerialNumber | grep -o '"IOPlatformSerialNumber" = "[^"]*"' | awk -F'"' '{print $4}'`
+			opts.Command = serialCmd
+			out := a.CmdV2(opts)
+			if out.Status.Error != nil {
+				a.Logger.Debugln("ioreg get serial number: ", out.Status.Error.Error())
+				wmiInfo["serialnumber"] = "n/a"
+			} else {
+				wmiInfo["serialnumber"] = removeNewlines(out.Stdout)
+			}
 		}
 	default:
 		wmiInfo["serialnumber"] = "n/a"
@@ -802,6 +862,44 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	}
 	if len(gpus) == 1 && gpus[0] == "unknown unknown" {
 		wmiInfo["gpus"] = ""
+	}
+
+	// Battery info (macOS laptops only)
+	if runtime.GOOS == "darwin" && a.osqueryClient != nil {
+		batteryResults, err := a.osqueryClient.Query(QueryBattery)
+		if err == nil && len(batteryResults) > 0 {
+			// Only include battery if data exists (laptops only)
+			wmiInfo["battery"] = batteryResults[0]
+		}
+	}
+
+	// Firewall status (macOS only)
+	if runtime.GOOS == "darwin" && a.osqueryClient != nil {
+		firewallResults, err := a.osqueryClient.Query(QueryFirewall)
+		if err == nil && len(firewallResults) > 0 {
+			row := firewallResults[0]
+			globalState, _ := strconv.Atoi(row["global_state"])
+			stealthEnabled, _ := strconv.Atoi(row["stealth_enabled"])
+
+			wmiInfo["firewall_global_state"] = globalState
+			wmiInfo["firewall_stealth"] = stealthEnabled == 1
+		}
+	}
+
+	// Disk encryption (macOS only)
+	if runtime.GOOS == "darwin" && a.osqueryClient != nil {
+		encryptionResults, err := a.osqueryClient.Query(QueryDiskEncryption)
+		if err == nil && len(encryptionResults) > 0 {
+			// Get FileVault status for the boot volume
+			for _, row := range encryptionResults {
+				if row["name"] != "" {
+					wmiInfo["encryption_status"] = row["filevault_status"]
+					encrypted := row["encrypted"] == "1"
+					wmiInfo["disk_encrypted"] = encrypted
+					break // Just use first/primary volume
+				}
+			}
+		}
 	}
 
 	return wmiInfo

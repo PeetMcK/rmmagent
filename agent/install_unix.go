@@ -77,6 +77,12 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 		os.Remove(etcConfig)
 		os.RemoveAll(nixAgentDir)
 		os.Remove(macPlistPath)
+
+		// Uninstall OSQuery
+		if err := a.UninstallOSQuery(); err != nil {
+			a.Logger.Debugln("OSQuery uninstall error:", err)
+			// Non-fatal - continue cleanup
+		}
 	}
 }
 

@@ -93,6 +93,11 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 
 	go a.SyncMeshNodeID()
 
+	// Check OSQuery health on startup (macOS only)
+	if runtime.GOOS == "darwin" {
+		go a.CheckOSQueryStartup()
+	}
+
 	time.Sleep(time.Duration(randRange(1, 3)) * time.Second)
 
 	a.Logger.Infof("Starting service loop (GOOS=%s, LimitData=%v)", runtime.GOOS, conf.LimitData)
