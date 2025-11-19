@@ -123,6 +123,12 @@ type ChocoInstalled struct {
 	Installed bool   `json:"installed"`
 }
 
+type InstallomatorInstalled struct {
+	AgentID   string `json:"agent_id"`
+	Installed bool   `json:"installed"`
+	Version   string `json:"version"`
+}
+
 // Disk holds physical disk info
 type Disk struct {
 	Device  string  `json:"device"`
