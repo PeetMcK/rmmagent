@@ -331,6 +331,34 @@ type NetworkInterface struct {
 	MTU       int            `json:"mtu"`
 }
 
+// getHardwarePortsMap returns a map of device names to hardware port names from networksetup
+func (a *Agent) getHardwarePortsMap() map[string]string {
+	hwPorts := make(map[string]string) // device -> hardware port name
+
+	opts := a.NewCMDOpts()
+	opts.Command = "networksetup -listallhardwareports"
+	out := a.CmdV2(opts)
+
+	if out.Status.Error != nil {
+		return hwPorts
+	}
+
+	lines := strings.Split(out.Stdout, "\n")
+	var currentPort string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Hardware Port:") {
+			currentPort = strings.TrimSpace(strings.TrimPrefix(line, "Hardware Port:"))
+		} else if strings.HasPrefix(line, "Device:") && currentPort != "" {
+			device := strings.TrimSpace(strings.TrimPrefix(line, "Device:"))
+			hwPorts[device] = currentPort
+			currentPort = ""
+		}
+	}
+
+	return hwPorts
+}
+
 // TransformNetworkInterfaces converts OSQuery network data to NetworkInterface format
 func (a *Agent) TransformNetworkInterfaces(
 	interfacesResults []map[string]string,
@@ -339,6 +367,9 @@ func (a *Agent) TransformNetworkInterfaces(
 	dnsResults []map[string]string,
 	wifiResults []map[string]string,
 ) (string, []string, error) {
+	// Get hardware ports from networksetup
+	hwPorts := a.getHardwarePortsMap()
+
 	// Build map of interfaces
 	interfaceMap := make(map[string]*NetworkInterface)
 
@@ -476,7 +507,7 @@ func (a *Agent) TransformNetworkInterfaces(
 			interfaceLabel = fmt.Sprintf("%s (%s)", primaryIface.Type, primaryIface.SSID)
 		}
 
-		outputLines = append(outputLines, fmt.Sprintf("Interface: %s", interfaceLabel))
+		outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s)", interfaceLabel, primaryIface.Name))
 
 		// Add IPv4 addresses
 		for _, ip := range primaryIface.IPv4 {
@@ -512,7 +543,7 @@ func (a *Agent) TransformNetworkInterfaces(
 				if iface.SSID != "" {
 					interfaceLabel = fmt.Sprintf("%s (%s)", iface.Type, iface.SSID)
 				}
-				outputLines = append(outputLines, fmt.Sprintf("Interface: %s", interfaceLabel))
+				outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s)", interfaceLabel, name))
 				for _, ip := range iface.IPv4 {
 					outputLines = append(outputLines, fmt.Sprintf("IP: %s", ip))
 				}
@@ -525,11 +556,37 @@ func (a *Agent) TransformNetworkInterfaces(
 			}
 		}
 
-		// Add offline interfaces with MAC addresses
+		// Add offline interfaces with MAC addresses (only real hardware ports)
 		for name, iface := range interfaceMap {
-			if iface.Status == "DOWN" && iface.MAC != "" && iface.MAC != "00:00:00:00:00:00" {
+			// Skip if this is the primary interface or an already-listed active interface
+			if name == primaryIface.Name {
+				continue
+			}
+			// Check if already listed as active
+			if iface.Status == "UP" && (len(iface.IPv4) > 0 || len(iface.IPv6) > 0) {
+				continue
+			}
+
+			// Only show if it's in the hardware ports map (real physical interface)
+			hwPortName, isHardwarePort := hwPorts[name]
+			if !isHardwarePort {
+				continue
+			}
+
+			// Skip Thunderbolt virtual bridges (Thunderbolt 1, Thunderbolt 2, etc.)
+			if strings.HasPrefix(hwPortName, "Thunderbolt ") && !strings.Contains(hwPortName, "Bridge") {
+				continue
+			}
+
+			// List as offline if it has a MAC address but no IPs, or if it's DOWN
+			if iface.MAC != "" && iface.MAC != "00:00:00:00:00:00" {
 				outputLines = append(outputLines, "")
-				outputLines = append(outputLines, fmt.Sprintf("Interface: %s (Offline)", name))
+				// Use the hardware port name from networksetup with device name
+				interfaceLabel := hwPortName
+				if iface.SSID != "" {
+					interfaceLabel = fmt.Sprintf("%s (%s)", hwPortName, iface.SSID)
+				}
+				outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s) (Offline)", interfaceLabel, name))
 				outputLines = append(outputLines, fmt.Sprintf("MAC: %s", iface.MAC))
 			}
 		}
