@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -331,32 +332,73 @@ type NetworkInterface struct {
 	MTU       int            `json:"mtu"`
 }
 
-// getHardwarePortsMap returns a map of device names to hardware port names from networksetup
-func (a *Agent) getHardwarePortsMap() map[string]string {
-	hwPorts := make(map[string]string) // device -> hardware port name
+// NetworkServiceInfo represents a network service from networksetup
+type NetworkServiceInfo struct {
+	Name   string
+	Device string
+	Order  int
+}
+
+// getNetworkServices returns ordered list of network services from networksetup
+func (a *Agent) getNetworkServices() []NetworkServiceInfo {
+	services := []NetworkServiceInfo{}
 
 	opts := a.NewCMDOpts()
-	opts.Command = "networksetup -listallhardwareports"
+	opts.Command = "networksetup -listnetworkserviceorder"
 	out := a.CmdV2(opts)
 
 	if out.Status.Error != nil {
-		return hwPorts
+		a.Logger.Errorf("DEBUG: networksetup command failed: %v", out.Status.Error)
+		return services
 	}
 
+	a.Logger.Errorf("DEBUG: networksetup output: %s", out.Stdout)
+
 	lines := strings.Split(out.Stdout, "\n")
-	var currentPort string
+	var currentService string
+	var currentOrder int
+
+	// Regular expression to parse: (Hardware Port: X, Device: Y)
+	deviceRe := regexp.MustCompile(`\(Hardware Port: .+?, Device: (.+?)\)`)
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Hardware Port:") {
-			currentPort = strings.TrimSpace(strings.TrimPrefix(line, "Hardware Port:"))
-		} else if strings.HasPrefix(line, "Device:") && currentPort != "" {
-			device := strings.TrimSpace(strings.TrimPrefix(line, "Device:"))
-			hwPorts[device] = currentPort
-			currentPort = ""
+
+		// Skip header and empty lines
+		if line == "" || strings.HasPrefix(line, "An asterisk") {
+			continue
+		}
+
+		// Check if this is a service name line (starts with number in parentheses)
+		// Must start with "(" followed by a digit
+		if strings.HasPrefix(line, "(") && len(line) > 1 && line[1] >= '0' && line[1] <= '9' && strings.Contains(line, ")") {
+			// Extract service name after the order number
+			parts := strings.SplitN(line, ")", 2)
+			if len(parts) == 2 {
+				currentService = strings.TrimSpace(parts[1])
+				// Extract order number
+				orderStr := strings.Trim(parts[0], "()")
+				currentOrder, _ = strconv.Atoi(orderStr)
+				a.Logger.Errorf("DEBUG: Found service: %s (order %d)", currentService, currentOrder)
+			}
+		} else if currentService != "" && strings.HasPrefix(line, "(Hardware Port:") {
+			// Extract device name from the line
+			matches := deviceRe.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				device := matches[1]
+				services = append(services, NetworkServiceInfo{
+					Name:   currentService,
+					Device: device,
+					Order:  currentOrder,
+				})
+				a.Logger.Errorf("DEBUG: Added service: %s -> %s", currentService, device)
+				currentService = ""
+			}
 		}
 	}
 
-	return hwPorts
+	a.Logger.Errorf("DEBUG: Total services found: %d", len(services))
+	return services
 }
 
 // TransformNetworkInterfaces converts OSQuery network data to NetworkInterface format
@@ -367,8 +409,8 @@ func (a *Agent) TransformNetworkInterfaces(
 	dnsResults []map[string]string,
 	wifiResults []map[string]string,
 ) (string, []string, error) {
-	// Get hardware ports from networksetup
-	hwPorts := a.getHardwarePortsMap()
+	// Get network services from networksetup in order
+	networkServices := a.getNetworkServices()
 
 	// Build map of interfaces
 	interfaceMap := make(map[string]*NetworkInterface)
@@ -494,99 +536,64 @@ func (a *Agent) TransformNetworkInterfaces(
 		}
 	}
 
-	// Build formatted IP information
-	if primaryIface != nil {
-		// Primary IP for backward compatibility
-		if len(primaryIface.IPv4) > 0 {
-			primaryIP = strings.Split(primaryIface.IPv4[0], "/")[0] // Just IP without CIDR for primary
-		}
-
-		// Format primary interface with all details
-		interfaceLabel := primaryIface.Type
-		if primaryIface.SSID != "" {
-			interfaceLabel = fmt.Sprintf("%s (%s)", primaryIface.Type, primaryIface.SSID)
-		}
-
-		outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s)", interfaceLabel, primaryIface.Name))
-
-		// Add IPv4 addresses
-		for _, ip := range primaryIface.IPv4 {
-			outputLines = append(outputLines, fmt.Sprintf("IP: %s", ip))
-		}
-
-		// Add Gateway if available
-		if primaryIface.Gateway != "" {
-			outputLines = append(outputLines, fmt.Sprintf("GW: %s", primaryIface.Gateway))
-		}
-
-		// Add DNS servers if available
-		if len(primaryIface.DNS) > 0 {
-			dnsStr := strings.Join(primaryIface.DNS, " | ")
-			outputLines = append(outputLines, fmt.Sprintf("DNS: %s", dnsStr))
-		}
-
-		// Add IPv6 if available
-		for _, ip := range primaryIface.IPv6 {
-			outputLines = append(outputLines, fmt.Sprintf("IPv6: %s", ip))
-		}
-
-		// Add MAC address
-		if primaryIface.MAC != "" && primaryIface.MAC != "00:00:00:00:00:00" {
-			outputLines = append(outputLines, fmt.Sprintf("MAC: %s", primaryIface.MAC))
-		}
-
-		// Add other active interfaces if any
-		for name, iface := range interfaceMap {
-			if name != primaryIface.Name && iface.Status == "UP" && (len(iface.IPv4) > 0 || len(iface.IPv6) > 0) {
+	// Build formatted IP information by iterating through network services in order
+	for idx, service := range networkServices {
+		iface, exists := interfaceMap[service.Device]
+		if !exists {
+			// Service exists but no interface data from OSQuery - show as offline with no MAC
+			if idx > 0 {
 				outputLines = append(outputLines, "")
-				interfaceLabel := iface.Type
-				if iface.SSID != "" {
-					interfaceLabel = fmt.Sprintf("%s (%s)", iface.Type, iface.SSID)
-				}
-				outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s)", interfaceLabel, name))
-				for _, ip := range iface.IPv4 {
-					outputLines = append(outputLines, fmt.Sprintf("IP: %s", ip))
-				}
-				for _, ip := range iface.IPv6 {
-					outputLines = append(outputLines, fmt.Sprintf("IPv6: %s", ip))
-				}
-				if iface.MAC != "" && iface.MAC != "00:00:00:00:00:00" {
-					outputLines = append(outputLines, fmt.Sprintf("MAC: %s", iface.MAC))
-				}
 			}
+			outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s) (Offline)", service.Name, service.Device))
+			continue
 		}
 
-		// Add offline interfaces with MAC addresses (only real hardware ports)
-		for name, iface := range interfaceMap {
-			// Skip if this is the primary interface or an already-listed active interface
-			if name == primaryIface.Name {
-				continue
-			}
-			// Check if already listed as active
-			if iface.Status == "UP" && (len(iface.IPv4) > 0 || len(iface.IPv6) > 0) {
-				continue
+		// Set primary IP from first active interface
+		if primaryIP == "" && len(iface.IPv4) > 0 {
+			primaryIP = strings.Split(iface.IPv4[0], "/")[0]
+		}
+
+		// Add blank line before each interface except the first
+		if idx > 0 {
+			outputLines = append(outputLines, "")
+		}
+
+		// Check if interface is active (has IP addresses)
+		isActive := len(iface.IPv4) > 0 || len(iface.IPv6) > 0
+
+		if isActive {
+			// Active interface - show all details
+			outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s)", service.Name, service.Device))
+
+			// Add IPv4 addresses
+			for _, ip := range iface.IPv4 {
+				outputLines = append(outputLines, fmt.Sprintf("IP: %s", ip))
 			}
 
-			// Only show if it's in the hardware ports map (real physical interface)
-			hwPortName, isHardwarePort := hwPorts[name]
-			if !isHardwarePort {
-				continue
+			// Add Gateway if available
+			if iface.Gateway != "" {
+				outputLines = append(outputLines, fmt.Sprintf("GW: %s", iface.Gateway))
 			}
 
-			// Skip Thunderbolt virtual bridges (Thunderbolt 1, Thunderbolt 2, etc.)
-			if strings.HasPrefix(hwPortName, "Thunderbolt ") && !strings.Contains(hwPortName, "Bridge") {
-				continue
+			// Add DNS servers if available
+			if len(iface.DNS) > 0 {
+				dnsStr := strings.Join(iface.DNS, " | ")
+				outputLines = append(outputLines, fmt.Sprintf("DNS: %s", dnsStr))
 			}
 
-			// List as offline if it has a MAC address but no IPs, or if it's DOWN
+			// Add IPv6 if available
+			for _, ip := range iface.IPv6 {
+				outputLines = append(outputLines, fmt.Sprintf("IPv6: %s", ip))
+			}
+
+			// Add MAC address
 			if iface.MAC != "" && iface.MAC != "00:00:00:00:00:00" {
-				outputLines = append(outputLines, "")
-				// Use the hardware port name from networksetup with device name
-				interfaceLabel := hwPortName
-				if iface.SSID != "" {
-					interfaceLabel = fmt.Sprintf("%s (%s)", hwPortName, iface.SSID)
-				}
-				outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s) (Offline)", interfaceLabel, name))
+				outputLines = append(outputLines, fmt.Sprintf("MAC: %s", iface.MAC))
+			}
+		} else {
+			// Offline interface - show with MAC if available
+			outputLines = append(outputLines, fmt.Sprintf("Interface: %s (%s) (Offline)", service.Name, service.Device))
+			if iface.MAC != "" && iface.MAC != "00:00:00:00:00:00" {
 				outputLines = append(outputLines, fmt.Sprintf("MAC: %s", iface.MAC))
 			}
 		}
@@ -779,4 +786,540 @@ func getMacOSCodeName(version string) string {
 	}
 
 	return ""
+}
+
+// TransformAssetsCPU transforms OSQuery cpu_info results to Win32_Processor format
+func (a *Agent) TransformAssetsCPU(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var cpuData []map[string]interface{}
+
+	// macOS cpu_info returns one row per physical CPU package
+	for _, result := range results {
+		cpu := make(map[string]interface{})
+
+		cpu["DeviceID"] = result["device_id"]
+		cpu["Name"] = result["model"]
+		cpu["Manufacturer"] = result["manufacturer"]
+		cpu["ProcessorType"] = result["processor_type"]
+		cpu["NumberOfCores"] = result["number_of_cores"]
+		cpu["NumberOfLogicalProcessors"] = result["logical_processors"]
+		cpu["CurrentClockSpeed"] = result["current_clock_speed"]
+		cpu["MaxClockSpeed"] = result["max_clock_speed"]
+		cpu["SocketDesignation"] = result["socket_designation"]
+
+		// Apple Silicon specific
+		if result["number_of_efficiency_cores"] != "" && result["number_of_efficiency_cores"] != "0" {
+			cpu["NumberOfEfficiencyCores"] = result["number_of_efficiency_cores"]
+		}
+		if result["number_of_performance_cores"] != "" && result["number_of_performance_cores"] != "0" {
+			cpu["NumberOfPerformanceCores"] = result["number_of_performance_cores"]
+		}
+
+		cpuData = append(cpuData, cpu)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{cpuData}
+}
+
+// extractCPUManufacturer extracts manufacturer from CPU brand
+func extractCPUManufacturer(brand string) string {
+	brand = strings.ToLower(brand)
+	if strings.Contains(brand, "intel") {
+		return "Intel"
+	} else if strings.Contains(brand, "amd") {
+		return "AMD"
+	} else if strings.Contains(brand, "apple") {
+		return "Apple"
+	}
+	return ""
+}
+
+// TransformAssetsMemory transforms OSQuery memory_devices results to Win32_PhysicalMemory format
+func (a *Agent) TransformAssetsMemory(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var memData []map[string]interface{}
+
+	for _, result := range results {
+		// Skip entries with no size
+		if result["size"] == "" || result["size"] == "0" {
+			continue
+		}
+
+		mem := make(map[string]interface{})
+		mem["Handle"] = result["handle"]
+		mem["Capacity"] = result["size"]
+		mem["MemoryType"] = result["type"]
+		mem["TypeDetail"] = result["type_detail"]
+		mem["FormFactor"] = result["form_factor"]
+		mem["DeviceLocator"] = result["device_locator"]
+		mem["BankLabel"] = result["bank_locator"]
+		mem["Manufacturer"] = result["manufacturer"]
+		mem["SerialNumber"] = result["serial_number"]
+		mem["AssetTag"] = result["asset_tag"]
+		mem["PartNumber"] = result["part_number"]
+		mem["Speed"] = result["configured_clock_speed"]
+		mem["ConfiguredVoltage"] = result["configured_voltage"]
+		mem["TotalWidth"] = result["total_width"]
+		mem["DataWidth"] = result["data_width"]
+
+		memData = append(memData, mem)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{memData}
+}
+
+// TransformAssetsBIOS transforms OSQuery platform_info results to Win32_BIOS format
+func (a *Agent) TransformAssetsBIOS(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var biosData []map[string]interface{}
+	bios := make(map[string]interface{})
+
+	if len(results) > 0 {
+		result := results[0]
+		bios["Manufacturer"] = result["vendor"]
+		bios["Name"] = result["vendor"]
+		bios["Version"] = result["version"]
+		bios["ReleaseDate"] = result["date"]
+		bios["SMBIOSBIOSVersion"] = result["version"]
+		bios["BIOSVersion"] = []string{result["version"]}
+	}
+
+	biosData = append(biosData, bios)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{biosData}
+}
+
+// TransformAssetsMotherboard transforms OSQuery ioreg results to Win32_BaseBoard format
+func (a *Agent) TransformAssetsMotherboard(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var boardData []map[string]interface{}
+	board := make(map[string]interface{})
+
+	// Parse IORegistry key-value pairs
+	for _, result := range results {
+		key := result["key"]
+		value := result["value"]
+
+		switch {
+		case strings.Contains(key, "manufacturer"):
+			board["Manufacturer"] = value
+		case strings.Contains(key, "board-id"):
+			board["Product"] = value
+		case strings.Contains(key, "serial"):
+			board["SerialNumber"] = value
+		case strings.Contains(key, "version"):
+			board["Version"] = value
+		case key == "model":
+			board["Model"] = value
+		}
+	}
+
+	boardData = append(boardData, board)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{boardData}
+}
+
+// TransformAssetsMotherboardFromSystemInfo creates motherboard data from system_info (fallback for macOS without ioreg)
+func (a *Agent) TransformAssetsMotherboardFromSystemInfo(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var boardData []map[string]interface{}
+	board := make(map[string]interface{})
+
+	result := results[0]
+	board["Manufacturer"] = result["hardware_vendor"]
+	board["Product"] = result["hardware_model"]
+	board["Version"] = result["hardware_version"]
+	board["SerialNumber"] = result["hardware_serial"]
+
+	boardData = append(boardData, board)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{boardData}
+}
+
+// TransformAssetsDisk transforms OSQuery block_devices results to Win32_DiskDrive format
+func (a *Agent) TransformAssetsDisk(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	// Also get SMART info if available
+	smartResults, _ := a.osqueryClient.Query(QuerySMARTDriveInfo)
+	smartMap := make(map[string]map[string]string)
+	for _, smart := range smartResults {
+		deviceName := smart["device_name"]
+		smartMap[deviceName] = smart
+	}
+
+	var diskData []map[string]interface{}
+
+	for _, result := range results {
+		disk := make(map[string]interface{})
+		disk["Name"] = result["name"]
+		disk["Model"] = result["model"]
+		disk["Size"] = result["size"]
+		disk["InterfaceType"] = result["type"]
+		disk["BytesPerSector"] = result["block_size"]
+
+		// Add SMART data if available
+		if smart, ok := smartMap["/dev/"+result["name"]]; ok {
+			disk["SerialNumber"] = smart["serial_number"]
+			disk["FirmwareRevision"] = smart["firmware_version"]
+		}
+
+		diskData = append(diskData, disk)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{diskData}
+}
+
+// TransformAssetsGPU transforms OSQuery pci_devices results to Win32_VideoController format
+func (a *Agent) TransformAssetsGPU(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var gpuData []map[string]interface{}
+
+	for _, result := range results {
+		gpu := make(map[string]interface{})
+		gpu["Name"] = result["model"]
+		gpu["VideoProcessor"] = result["model"]
+		gpu["AdapterCompatibility"] = result["vendor"]
+		gpu["DriverVersion"] = result["driver"]
+		gpu["PNPDeviceID"] = result["pci_slot"]
+
+		gpuData = append(gpuData, gpu)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{gpuData}
+}
+
+// TransformAssetsGPUFromStrings transforms GPU strings (from system_profiler) to Win32_VideoController format
+func (a *Agent) TransformAssetsGPUFromStrings(gpus []string) []interface{} {
+	if len(gpus) == 0 {
+		return []interface{}{}
+	}
+
+	var gpuData []map[string]interface{}
+
+	for _, gpuStr := range gpus {
+		gpu := make(map[string]interface{})
+		gpu["Name"] = gpuStr
+		gpu["VideoProcessor"] = gpuStr
+		gpu["AdapterCompatibility"] = "Apple"
+
+		gpuData = append(gpuData, gpu)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{gpuData}
+}
+
+// TransformAssetsUSB transforms OSQuery usb_devices results to Win32_USBController format
+func (a *Agent) TransformAssetsUSB(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var usbData []map[string]interface{}
+
+	// Include all USB devices (not just hubs/controllers)
+	deviceMap := make(map[string]map[string]interface{})
+
+	for _, result := range results {
+		// Create unique key to avoid duplicates
+		key := result["vendor_id"] + ":" + result["model_id"] + ":" + result["usb_address"]
+		if _, exists := deviceMap[key]; !exists {
+			usb := make(map[string]interface{})
+			usb["Name"] = result["model"]
+			usb["Manufacturer"] = result["vendor"]
+			usb["DeviceID"] = result["usb_address"]
+			usb["Description"] = result["model"]
+			usb["PNPDeviceID"] = fmt.Sprintf("USB\\VID_%s&PID_%s", result["vendor_id"], result["model_id"])
+			deviceMap[key] = usb
+		}
+	}
+
+	for _, usb := range deviceMap {
+		usbData = append(usbData, usb)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{usbData}
+}
+
+// TransformAssetsOS transforms OSQuery os_version results to Win32_OperatingSystem format
+func (a *Agent) TransformAssetsOS(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var osData []map[string]interface{}
+	os := make(map[string]interface{})
+
+	if len(results) > 0 {
+		result := results[0]
+		osName := result["name"]
+		osVersion := result["version"]
+
+		// Add code name for macOS
+		if result["platform"] == "darwin" {
+			codeName := getMacOSCodeName(osVersion)
+			if codeName != "" {
+				osName = osName + " " + codeName
+			}
+		}
+
+		os["Caption"] = osName
+		os["Version"] = osVersion
+		os["BuildNumber"] = result["build"]
+		os["OSArchitecture"] = result["arch"]
+		os["Name"] = osName
+		os["Manufacturer"] = "Apple Inc."
+	}
+
+	osData = append(osData, os)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{osData}
+}
+
+// TransformAssetsComputerSystem transforms OSQuery system_info results to Win32_ComputerSystem format
+func (a *Agent) TransformAssetsComputerSystem(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var sysData []map[string]interface{}
+	sys := make(map[string]interface{})
+
+	if len(results) > 0 {
+		result := results[0]
+		sys["Manufacturer"] = result["hardware_vendor"]
+		sys["Model"] = result["hardware_model"]
+		sys["Name"] = result["hostname"]
+		sys["TotalPhysicalMemory"] = result["physical_memory"]
+		sys["NumberOfProcessors"] = "1" // Most Macs have 1 physical CPU package
+		sys["NumberOfLogicalProcessors"] = result["cpu_logical_cores"]
+	}
+
+	sysData = append(sysData, sys)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{sysData}
+}
+
+// TransformAssetsComputerSystemProduct transforms OSQuery system_info results to Win32_ComputerSystemProduct format
+func (a *Agent) TransformAssetsComputerSystemProduct(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var prodData []map[string]interface{}
+	prod := make(map[string]interface{})
+
+	if len(results) > 0 {
+		result := results[0]
+		prod["Name"] = result["hardware_model"]
+		prod["Vendor"] = result["hardware_vendor"]
+		prod["Version"] = result["hardware_version"]
+		prod["UUID"] = result["uuid"]
+		prod["IdentifyingNumber"] = result["hardware_serial"]
+	}
+
+	prodData = append(prodData, prod)
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{prodData}
+}
+
+// TransformAssetsNetworkAdapter transforms OSQuery interface_details results to Win32_NetworkAdapter format
+func (a *Agent) TransformAssetsNetworkAdapter(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	// Get network services for friendly names
+	networkServices := a.getNetworkServices()
+	serviceMap := make(map[string]string) // device -> friendly name
+	for _, svc := range networkServices {
+		serviceMap[svc.Device] = svc.Name
+	}
+
+	var adapterData []map[string]interface{}
+
+	for _, result := range results {
+		adapter := make(map[string]interface{})
+
+		// Use friendly name if available, otherwise use interface name
+		friendlyName := serviceMap[result["interface"]]
+		if friendlyName == "" {
+			friendlyName = result["interface"]
+		}
+
+		adapter["Name"] = friendlyName
+		adapter["Description"] = friendlyName
+		adapter["MACAddress"] = result["mac"]
+		adapter["AdapterType"] = result["type"]
+		adapter["Speed"] = "" // Not available in interface_details
+
+		// Determine if enabled based on flags
+		flags := result["flags"]
+		adapter["NetEnabled"] = strings.Contains(flags, "UP")
+
+		adapterData = append(adapterData, adapter)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{adapterData}
+}
+
+// TransformAssetsNetworkConfig transforms OSQuery network data to Win32_NetworkAdapterConfiguration format
+func (a *Agent) TransformAssetsNetworkConfig(
+	interfacesResults []map[string]string,
+	addressesResults []map[string]string,
+	gatewayResults []map[string]string,
+	dnsResults []map[string]string,
+) []interface{} {
+	if len(interfacesResults) == 0 {
+		return []interface{}{}
+	}
+
+	// Get network services for friendly names
+	networkServices := a.getNetworkServices()
+	serviceMap := make(map[string]string) // device -> friendly name
+	for _, svc := range networkServices {
+		serviceMap[svc.Device] = svc.Name
+	}
+
+	// Build map of interfaces with their configuration
+	configMap := make(map[string]map[string]interface{})
+
+	// Process interfaces
+	for _, iface := range interfacesResults {
+		ifaceName := iface["interface"]
+		friendlyName := serviceMap[ifaceName]
+		if friendlyName == "" {
+			friendlyName = ifaceName
+		}
+
+		config := make(map[string]interface{})
+		config["Description"] = friendlyName
+		config["Caption"] = friendlyName
+		config["MACAddress"] = iface["mac"]
+		config["Index"] = ifaceName
+		config["IPAddress"] = []string{}
+		config["IPSubnet"] = []string{}
+		config["DefaultIPGateway"] = []string{}
+		config["DNSServerSearchOrder"] = []string{}
+		config["IPEnabled"] = strings.Contains(iface["flags"], "UP")
+
+		configMap[ifaceName] = config
+	}
+
+	// Add IP addresses and subnets
+	for _, addr := range addressesResults {
+		if config, ok := configMap[addr["interface"]]; ok {
+			ipAddresses := config["IPAddress"].([]string)
+			ipSubnets := config["IPSubnet"].([]string)
+			config["IPAddress"] = append(ipAddresses, addr["address"])
+			config["IPSubnet"] = append(ipSubnets, addr["mask"])
+		}
+	}
+
+	// Add default gateways
+	for _, gw := range gatewayResults {
+		if config, ok := configMap[gw["interface"]]; ok {
+			gateways := config["DefaultIPGateway"].([]string)
+			config["DefaultIPGateway"] = append(gateways, gw["gateway"])
+		}
+	}
+
+	// Add DNS servers (apply to all interfaces)
+	dnsServers := []string{}
+	for _, dns := range dnsResults {
+		dnsServers = append(dnsServers, dns["address"])
+	}
+	for _, config := range configMap {
+		config["DNSServerSearchOrder"] = dnsServers
+	}
+
+	// Convert to array format
+	var configData []map[string]interface{}
+	for _, config := range configMap {
+		configData = append(configData, config)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{configData}
+}
+
+// TransformAssetsMonitors transforms OSQuery connected_displays results to Win32_DesktopMonitor format
+func (a *Agent) TransformAssetsMonitors(results []map[string]string) []interface{} {
+	if len(results) == 0 {
+		return []interface{}{}
+	}
+
+	var monitorData []map[string]interface{}
+
+	for _, result := range results {
+		monitor := make(map[string]interface{})
+
+		monitor["Name"] = result["name"]
+		monitor["MonitorType"] = result["display_type"]
+		monitor["SerialNumber"] = result["serial_number"]
+		monitor["ProductID"] = result["product_id"]
+		monitor["VendorID"] = result["vendor_id"]
+
+		// Parse resolution (e.g., "1710 x 1107 @ 60.00Hz")
+		resolution := result["resolution"]
+		monitor["Description"] = resolution
+
+		// Parse pixels (e.g., "3420 x 2214")
+		pixels := result["pixels"]
+		if strings.Contains(pixels, " x ") {
+			parts := strings.Split(pixels, " x ")
+			if len(parts) == 2 {
+				monitor["ScreenWidth"] = parts[0]
+				monitor["ScreenHeight"] = parts[1]
+			}
+		}
+
+		monitor["ConnectionType"] = result["connection_type"]
+		monitor["Main"] = result["main"] == "1"
+		monitor["Mirror"] = result["mirror"] == "1"
+
+		// Manufacturing date
+		if result["manufactured_year"] != "0" && result["manufactured_year"] != "" {
+			monitor["ManufacturedYear"] = result["manufactured_year"]
+			monitor["ManufacturedWeek"] = result["manufactured_week"]
+		}
+
+		monitorData = append(monitorData, monitor)
+	}
+
+	// Return in Windows WMI format: array of arrays
+	return []interface{}{monitorData}
 }

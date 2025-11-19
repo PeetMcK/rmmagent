@@ -184,7 +184,6 @@ FROM interface_details id
 WHERE id.interface NOT LIKE 'utun%'
   AND id.interface NOT LIKE 'gif%'
   AND id.interface NOT LIKE 'stf%'
-  AND id.interface NOT LIKE 'bridge%'
   AND id.interface NOT LIKE 'awdl%'
   AND id.interface NOT LIKE 'llw%'
   AND id.interface != 'lo0'
@@ -258,6 +257,212 @@ SELECT
 FROM disk_encryption
 WHERE name != ''
 `
+
+	// QueryCPUInfo retrieves detailed CPU information
+	QueryCPUInfo = `
+SELECT
+    device_id,
+    model,
+    manufacturer,
+    processor_type,
+    number_of_cores,
+    logical_processors,
+    current_clock_speed,
+    max_clock_speed,
+    socket_designation,
+    number_of_efficiency_cores,
+    number_of_performance_cores
+FROM cpu_info
+`
+
+	// QueryMemoryInfo retrieves system memory information
+	QueryMemoryInfo = `
+SELECT
+    memory_total,
+    memory_free,
+    buffers,
+    cached,
+    swap_total,
+    swap_free
+FROM memory_info
+`
+
+	// QueryMemoryDevices retrieves physical memory device information
+	QueryMemoryDevices = `
+SELECT
+    handle,
+    size,
+    type,
+    type_detail,
+    form_factor,
+    set,
+    device_locator,
+    bank_locator,
+    manufacturer,
+    serial_number,
+    asset_tag,
+    part_number,
+    configured_clock_speed,
+    configured_voltage,
+    total_width,
+    data_width
+FROM memory_devices
+WHERE size != '0'
+`
+
+	// QueryPlatformInfo retrieves BIOS/platform information
+	QueryPlatformInfo = `
+SELECT
+    vendor,
+    version,
+    date,
+    revision,
+    address,
+    size,
+    volume_size,
+    extra
+FROM platform_info
+`
+
+	// QueryBlockDevices retrieves block device (disk) information
+	QueryBlockDevices = `
+SELECT
+    name,
+    parent,
+    vendor,
+    model,
+    size,
+    block_size,
+    uuid,
+    type,
+    label
+FROM block_devices
+WHERE name LIKE '/dev/disk%'
+  AND parent = ''
+ORDER BY name
+`
+
+	// QuerySMARTDriveInfo retrieves SMART disk information
+	QuerySMARTDriveInfo = `
+SELECT
+    device_name,
+    disk_id,
+    driver_type,
+    model_family,
+    device_model,
+    serial_number,
+    firmware_version,
+    user_capacity,
+    smart_supported,
+    smart_enabled
+FROM smart_drive_info
+`
+
+	// QueryPCIDevices retrieves PCI device information (for GPUs)
+	QueryPCIDevices = `
+SELECT
+    pci_slot,
+    driver,
+    vendor,
+    vendor_id,
+    model,
+    model_id,
+    class,
+    subclass,
+    pci_class,
+    pci_subclass
+FROM pci_devices
+WHERE class = '030000'
+   OR pci_class LIKE '03%'
+ORDER BY pci_slot
+`
+
+	// QueryUSBDevices retrieves USB device information
+	QueryUSBDevices = `
+SELECT
+    usb_address,
+    usb_port,
+    vendor,
+    vendor_id,
+    model,
+    model_id,
+    serial,
+    class,
+    subclass,
+    protocol,
+    removable
+FROM usb_devices
+ORDER BY usb_address
+`
+
+	// QueryIORegPlatform retrieves macOS platform information from IORegistry
+	QueryIORegPlatform = `
+SELECT
+    key,
+    value
+FROM ioreg
+WHERE class = 'IOPlatformExpertDevice'
+  AND (key LIKE 'board-%'
+   OR key LIKE 'manufacturer'
+   OR key LIKE 'product-%'
+   OR key LIKE 'version'
+   OR key LIKE 'serial%'
+   OR key = 'model'
+   OR key = 'IOPlatformUUID')
+`
+
+	// QueryIORegBIOS retrieves macOS BIOS/firmware information from IORegistry
+	QueryIORegBIOS = `
+SELECT
+    key,
+    value
+FROM ioreg
+WHERE (path LIKE 'IODeviceTree:/efi/platform%'
+    OR key LIKE 'Boot%'
+    OR key LIKE 'firmware%'
+    OR key LIKE 'ROM%')
+  AND key NOT LIKE '%Function%'
+  AND key NOT LIKE '%Spec%'
+`
+
+	// QueryIORegGPU retrieves macOS GPU information from IORegistry
+	QueryIORegGPU = `
+SELECT
+    key,
+    value,
+    class,
+    parent
+FROM ioreg
+WHERE (class LIKE '%GPU%'
+    OR class LIKE '%Display%'
+    OR class = 'IOPCIDevice')
+  AND (key LIKE 'model'
+   OR key LIKE 'VRAM%'
+   OR key LIKE 'device-%'
+   OR key LIKE 'vendor-%'
+   OR key LIKE 'IOName')
+`
+
+	// QueryConnectedDisplays retrieves connected display/monitor information (macOS)
+	QueryConnectedDisplays = `
+SELECT
+    name,
+    product_id,
+    serial_number,
+    vendor_id,
+    manufactured_week,
+    manufactured_year,
+    display_id,
+    pixels,
+    resolution,
+    connection_type,
+    display_type,
+    main,
+    mirror,
+    online
+FROM connected_displays
+WHERE online = 1
+`
 )
 
 // QueryDefinitions maps query names to SQL for easy lookup
@@ -280,4 +485,16 @@ var QueryDefinitions = map[string]string{
 	"battery":              QueryBattery,
 	"firewall":             QueryFirewall,
 	"disk_encryption":      QueryDiskEncryption,
+	"cpu_info":             QueryCPUInfo,
+	"memory_info":          QueryMemoryInfo,
+	"memory_devices":       QueryMemoryDevices,
+	"platform_info":        QueryPlatformInfo,
+	"block_devices":        QueryBlockDevices,
+	"smart_drive_info":     QuerySMARTDriveInfo,
+	"pci_devices":          QueryPCIDevices,
+	"usb_devices":          QueryUSBDevices,
+	"ioreg_platform":       QueryIORegPlatform,
+	"ioreg_bios":           QueryIORegBIOS,
+	"ioreg_gpu":            QueryIORegGPU,
+	"connected_displays":   QueryConnectedDisplays,
 }

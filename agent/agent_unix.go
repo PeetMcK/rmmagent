@@ -505,13 +505,32 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	// local ips - use OSQuery if available, fallback to ps.Host()
 	if a.osqueryClient != nil {
 		// Query network interfaces via OSQuery
+		a.Logger.Errorln("DEBUG: Starting network interface queries via OSQuery")
 		interfacesResults, err1 := a.osqueryClient.Query(QueryNetworkInterfaces)
+		a.Logger.Errorln("DEBUG: QueryNetworkInterfaces completed, err:", err1)
 		addressesResults, err2 := a.osqueryClient.Query(QueryInterfaceAddresses)
+		a.Logger.Errorln("DEBUG: QueryInterfaceAddresses completed, err:", err2)
 		gatewayResults, err3 := a.osqueryClient.Query(QueryDefaultGateway)
+		a.Logger.Errorln("DEBUG: QueryDefaultGateway completed, err:", err3)
 		dnsResults, err4 := a.osqueryClient.Query(QueryDNS)
+		a.Logger.Errorln("DEBUG: QueryDNS completed, err:", err4)
 		wifiResults, _ := a.osqueryClient.Query(QueryWiFi) // WiFi may not be available
 
+		if err1 != nil {
+			a.Logger.Errorf("OSQuery QueryNetworkInterfaces failed: %v", err1)
+		}
+		if err2 != nil {
+			a.Logger.Errorf("OSQuery QueryInterfaceAddresses failed: %v", err2)
+		}
+		if err3 != nil {
+			a.Logger.Errorf("OSQuery QueryDefaultGateway failed: %v", err3)
+		}
+		if err4 != nil {
+			a.Logger.Errorf("OSQuery QueryDNS failed: %v", err4)
+		}
+
 		if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+			a.Logger.Errorln("DEBUG: All queries succeeded, calling TransformNetworkInterfaces")
 			_, allIPsArray, err := a.TransformNetworkInterfaces(
 				interfacesResults,
 				addressesResults,
@@ -521,7 +540,14 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 			)
 			if err == nil && len(allIPsArray) > 0 {
 				ips = allIPsArray
+				a.Logger.Errorf("DEBUG: Successfully transformed network interfaces, got %d lines", len(allIPsArray))
+			} else if err != nil {
+				a.Logger.Errorf("TransformNetworkInterfaces failed: %v", err)
+			} else {
+				a.Logger.Errorln("DEBUG: TransformNetworkInterfaces returned empty array")
 			}
+		} else {
+			a.Logger.Errorln("DEBUG: One or more queries failed, using gopsutil fallback")
 		}
 	}
 
@@ -905,6 +931,93 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 				}
 			}
 		}
+	}
+
+	// Assets collection for macOS (matching Windows WMI format)
+	if runtime.GOOS == "darwin" && a.osqueryClient != nil {
+		a.Logger.Infoln("Collecting Assets data via OSQuery for macOS")
+
+		// 1. Operating System (Win32_OperatingSystem)
+		if osResults, err := a.osqueryClient.Query(QueryOSVersion); err == nil && len(osResults) > 0 {
+			wmiInfo["os"] = a.TransformAssetsOS(osResults)
+		}
+
+		// 2. CPU (Win32_Processor)
+		if cpuResults, err := a.osqueryClient.Query(QueryCPUInfo); err == nil {
+			wmiInfo["cpu"] = a.TransformAssetsCPU(cpuResults)
+		}
+
+		// 3. Memory (Win32_PhysicalMemory)
+		if memResults, err := a.osqueryClient.Query(QueryMemoryDevices); err == nil && len(memResults) > 0 {
+			wmiInfo["mem"] = a.TransformAssetsMemory(memResults)
+		}
+
+		// 4. BIOS (Win32_BIOS)
+		if biosResults, err := a.osqueryClient.Query(QueryPlatformInfo); err == nil && len(biosResults) > 0 {
+			wmiInfo["bios"] = a.TransformAssetsBIOS(biosResults)
+		}
+
+		// 5. Disks (Win32_DiskDrive)
+		if diskResults, err := a.osqueryClient.Query(QueryBlockDevices); err == nil && len(diskResults) > 0 {
+			wmiInfo["disk"] = a.TransformAssetsDisk(diskResults)
+		}
+
+		// 6. Computer System (Win32_ComputerSystem)
+		if sysResults, err := a.osqueryClient.Query(QuerySystemInfo); err == nil && len(sysResults) > 0 {
+			wmiInfo["comp_sys"] = a.TransformAssetsComputerSystem(sysResults)
+		}
+
+		// 7. Motherboard (Win32_BaseBoard) - Use system_info since ioreg table doesn't exist
+		if sysResults, err := a.osqueryClient.Query(QuerySystemInfo); err == nil && len(sysResults) > 0 {
+			wmiInfo["base_board"] = a.TransformAssetsMotherboardFromSystemInfo(sysResults)
+		}
+
+		// 8. Computer System Product (Win32_ComputerSystemProduct)
+		if sysResults, err := a.osqueryClient.Query(QuerySystemInfo); err == nil && len(sysResults) > 0 {
+			wmiInfo["comp_sys_prod"] = a.TransformAssetsComputerSystemProduct(sysResults)
+		}
+
+		// 9. Network Config (Win32_NetworkAdapterConfiguration)
+		interfaceResults, err1 := a.osqueryClient.Query(QueryNetworkInterfaces)
+		addressResults, err2 := a.osqueryClient.Query(QueryInterfaceAddresses)
+		gatewayResults, err3 := a.osqueryClient.Query(QueryDefaultGateway)
+		dnsResults, err4 := a.osqueryClient.Query(QueryDNS)
+
+		if err1 == nil && err2 == nil && err3 == nil && err4 == nil && len(interfaceResults) > 0 {
+			wmiInfo["network_config"] = a.TransformAssetsNetworkConfig(
+				interfaceResults,
+				addressResults,
+				gatewayResults,
+				dnsResults,
+			)
+		}
+
+		// 10. Graphics (Win32_VideoController) - Use existing GPU data from system_profiler
+		// pci_devices table doesn't work on Apple Silicon, use the gpus data we already collected
+		if gpusArray, ok := wmiInfo["gpus"].([]string); ok && len(gpusArray) > 0 {
+			wmiInfo["graphics"] = a.TransformAssetsGPUFromStrings(gpusArray)
+		}
+
+		// 11. USB (Win32_USBController)
+		if usbResults, err := a.osqueryClient.Query(QueryUSBDevices); err == nil && len(usbResults) > 0 {
+			wmiInfo["usb"] = a.TransformAssetsUSB(usbResults)
+		} else {
+			wmiInfo["usb"] = []interface{}{}
+		}
+
+		// 12. Network Adapters (Win32_NetworkAdapter)
+		if adapterResults, err := a.osqueryClient.Query(QueryNetworkInterfaces); err == nil && len(adapterResults) > 0 {
+			wmiInfo["network_adapter"] = a.TransformAssetsNetworkAdapter(adapterResults)
+		}
+
+		// 13. Desktop Monitors (Win32_DesktopMonitor)
+		if displayResults, err := a.osqueryClient.Query(QueryConnectedDisplays); err == nil && len(displayResults) > 0 {
+			wmiInfo["desktop_monitor"] = a.TransformAssetsMonitors(displayResults)
+		} else {
+			wmiInfo["desktop_monitor"] = []interface{}{}
+		}
+
+		a.Logger.Infoln("Assets data collection complete")
 	}
 
 	return wmiInfo
