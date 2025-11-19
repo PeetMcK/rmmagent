@@ -630,7 +630,12 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 
 	// cpus - use OSQuery if available, fallback to gopsutil
 	if osqueryAvailable && systemInfoResult["cpu_brand"] != "" {
-		cpus = append(cpus, systemInfoResult["cpu_brand"])
+		cpuBrand := systemInfoResult["cpu_brand"]
+		// Add core count if available
+		if systemInfoResult["cpu_physical_cores"] != "" {
+			cpuBrand = fmt.Sprintf("%s (%s core CPU)", cpuBrand, systemInfoResult["cpu_physical_cores"])
+		}
+		cpus = append(cpus, cpuBrand)
 	} else {
 		// Fallback to gopsutil
 		cpuInfo, err := cpu.Info()
