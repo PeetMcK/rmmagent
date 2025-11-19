@@ -36,6 +36,7 @@ type NatsMsg struct {
 	RecoveryCommand        string            `json:"recoverycommand"`
 	UpdateGUIDs            []string          `json:"guids"`
 	ChocoProgName          string            `json:"choco_prog_name"`
+	InstallomatorLabel     string            `json:"installomator_label"`
 	PendingActionPK        int               `json:"pending_action_pk"`
 	PatchMgmt              bool              `json:"patch_mgmt"`
 	ID                     int               `json:"id"`
@@ -476,6 +477,19 @@ func (a *Agent) RunRPC() {
 				out, _ := a.InstallWithChoco(p.ChocoProgName)
 				results := map[string]string{"results": out}
 				url := fmt.Sprintf("/api/v4/%s/%d/chocoresult/", a.AgentID, p.PendingActionPK)
+				a.rClient.R().SetBody(results).Patch(url)
+			}(payload)
+		case "installinstallomator":
+			go a.InstallInstallomator()
+		case "installwithinstallomator":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				ret.Encode("ok")
+				msg.Respond(resp)
+				out, _ := a.InstallWithInstallomator(p.InstallomatorLabel)
+				results := map[string]string{"results": out}
+				url := fmt.Sprintf("/api/v4/%s/%d/installomatorresult/", a.AgentID, p.PendingActionPK)
 				a.rClient.R().SetBody(results).Patch(url)
 			}(payload)
 		case "getwinupdates":
