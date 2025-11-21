@@ -100,6 +100,7 @@ const (
 	nixAgentBinDir       = nixAgentDir + "/bin"
 	nixAgentEtcDir       = nixAgentDir + "/etc"
 	nixMeshAgentBin      = nixMeshDir + "/meshagent"
+	macMeshAgentAppBin   = nixMeshDir + "/MeshAgent.app/Contents/MacOS/meshagent"
 	macPlistPath         = "/Library/LaunchDaemons/tacticalagent.plist"
 	macPlistName         = "tacticalagent"
 	defaultMacMeshSvcDir = "/usr/local/mesh_services"
@@ -208,7 +209,10 @@ func New(logger *logrus.Logger, version string) *Agent {
 			MeshSysExe = filepath.Join(os.Getenv("ProgramFiles"), "Mesh Agent", "MeshAgent.exe")
 		}
 	case "darwin":
-		if trmm.FileExists(nixMeshAgentBin) {
+		// Check for mesh agent in order of preference
+		if trmm.FileExists(macMeshAgentAppBin) {
+			MeshSysExe = macMeshAgentAppBin
+		} else if trmm.FileExists(nixMeshAgentBin) {
 			MeshSysExe = nixMeshAgentBin
 		} else {
 			MeshSysExe = "/usr/local/mesh_services/meshagent/meshagent"
