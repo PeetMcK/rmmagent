@@ -160,7 +160,7 @@ func (a *Agent) getMacOSVolumeInfo(mountPath string) (string, string) {
 
 	var volumeName, volumeType string
 
-	// Parse output to find "Volume Name:" and "APFS Volume Group"
+	// Parse output to find Volume Name and File System type
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "Volume Name:") {
@@ -169,8 +169,17 @@ func (a *Agent) getMacOSVolumeInfo(mountPath string) (string, string) {
 				volumeName = strings.TrimSpace(parts[1])
 			}
 		}
-		if strings.Contains(line, "APFS Volume Group:") {
-			volumeType = "APFS Volume Group"
+		if strings.Contains(line, "File System Personality:") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				fsType := strings.TrimSpace(parts[1])
+				// For APFS, indicate it's a volume group
+				if fsType == "APFS" {
+					volumeType = "APFS Volume Group"
+				} else {
+					volumeType = fsType
+				}
+			}
 		}
 	}
 
