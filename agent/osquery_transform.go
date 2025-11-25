@@ -158,9 +158,9 @@ func (a *Agent) getMacOSVolumeInfo(mountPath string) (string, string) {
 		return "", ""
 	}
 
-	var volumeName, volumeType string
+	var volumeName, volumeType, fileVaultStatus string
 
-	// Parse output to find Volume Name and File System type
+	// Parse output to find Volume Name, File System type, and FileVault status
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "Volume Name:") {
@@ -181,6 +181,17 @@ func (a *Agent) getMacOSVolumeInfo(mountPath string) (string, string) {
 				}
 			}
 		}
+		if strings.Contains(line, "FileVault:") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				fileVaultStatus = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	// Append encryption status to volume type if FileVault is enabled
+	if fileVaultStatus != "" && strings.Contains(strings.ToLower(fileVaultStatus), "yes") {
+		volumeType = volumeType + " (Encrypted)"
 	}
 
 	return volumeName, volumeType
