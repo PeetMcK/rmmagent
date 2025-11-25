@@ -11,6 +11,8 @@ https://license.tacticalrmm.com
 
 package main
 
+import "C" // Required for macOS Info.plist embedding via -sectcreate
+
 import (
 	"flag"
 	"fmt"

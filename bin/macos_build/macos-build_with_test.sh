@@ -331,6 +331,17 @@ if [ "$SKIP_BUILD" = "no" ]; then
     echo "[1/4] Building rmmagent ($ARCH_DESC)..."
     echo "[$(date '+%H:%M:%S')] Build started"
 
+    # Generate Info.plist for embedding
+    echo "  Generating Info.plist..."
+    VERSION=$(grep 'version = ' "$REPO_DIR/main.go" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    BUILD_DATE=$(date '+%y.%m.%d.%H.%M')
+    PLIST_TEMPLATE="$REPO_DIR/build/macos/Info.plist.template"
+    PLIST_OUTPUT="$REPO_DIR/build/macos/Info.plist"
+
+    # Create Info.plist from template
+    sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{BUILD_DATE}}/$BUILD_DATE/g" "$PLIST_TEMPLATE" > "$PLIST_OUTPUT"
+    echo "  ✓ Info.plist generated (Version: $VERSION, Build: $BUILD_DATE)"
+
     # Run build as the actual user (not root)
     if [ "$ARCH" = "universal" ]; then
         echo "  Building for multiple architectures..."
@@ -348,12 +359,12 @@ if [ "$SKIP_BUILD" = "no" ]; then
 
         # Build AMD64
         echo "  Building AMD64 binary (targeting macOS 10.15+)..."
-        sudo -u $SUDO_USER bash -c "cd '$REPO_DIR' && CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 MACOSX_DEPLOYMENT_TARGET=10.15 go build -o '$AMD64_OUTPUT/rmmagent' -ldflags='-s -w' ."
+        sudo -u $SUDO_USER bash -c "cd '$REPO_DIR' && CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 MACOSX_DEPLOYMENT_TARGET=10.15 go build -o '$AMD64_OUTPUT/rmmagent' -ldflags='-s -w -extldflags \"-sectcreate __TEXT __info_plist build/macos/Info.plist\"' ."
         echo "  ✓ AMD64 build complete"
 
         # Build ARM64
         echo "  Building ARM64 binary (targeting macOS 11.0+)..."
-        sudo -u $SUDO_USER bash -c "cd '$REPO_DIR' && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 MACOSX_DEPLOYMENT_TARGET=11.0 go build -o '$ARM64_OUTPUT/rmmagent' -ldflags='-s -w -linkmode=external' ."
+        sudo -u $SUDO_USER bash -c "cd '$REPO_DIR' && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 MACOSX_DEPLOYMENT_TARGET=11.0 go build -o '$ARM64_OUTPUT/rmmagent' -ldflags='-s -w -linkmode=external -extldflags \"-sectcreate __TEXT __info_plist build/macos/Info.plist\"' ."
         echo "  ✓ ARM64 build complete"
 
         # Create universal binary with lipo
@@ -383,11 +394,11 @@ if [ "$SKIP_BUILD" = "no" ]; then
         # Set deployment target based on architecture
         if [ "$ARCH" = "arm64" ]; then
             DEPLOYMENT_TARGET="11.0"
-            LDFLAGS="-s -w -linkmode=external"
+            LDFLAGS="-s -w -linkmode=external -extldflags \"-sectcreate __TEXT __info_plist build/macos/Info.plist\""
             echo "  Building $ARCH binary (targeting macOS 11.0+)..."
         else
             DEPLOYMENT_TARGET="10.15"
-            LDFLAGS="-s -w"
+            LDFLAGS="-s -w -extldflags \"-sectcreate __TEXT __info_plist build/macos/Info.plist\""
             echo "  Building $ARCH binary (targeting macOS 10.15+)..."
         fi
         sudo -u $SUDO_USER bash -c "cd '$REPO_DIR' && CGO_ENABLED=1 GOOS=darwin GOARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPLOYMENT_TARGET go build -o '$BINARY_PATH' -ldflags='$LDFLAGS' ."
