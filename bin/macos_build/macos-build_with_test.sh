@@ -340,10 +340,11 @@ if [ "$SKIP_BUILD" = "no" ]; then
         ARM64_OUTPUT="$REPO_DIR/build/Output/macos/arm64"
         UNIVERSAL_OUTPUT="$REPO_DIR/build/Output/macos/universal"
 
-        # Create output directories
+        # Create output directories and set ownership to actual user
         mkdir -p "$AMD64_OUTPUT"
         mkdir -p "$ARM64_OUTPUT"
         mkdir -p "$UNIVERSAL_OUTPUT"
+        chown -R $SUDO_USER:staff "$REPO_DIR/build"
 
         # Build AMD64
         echo "  Building AMD64 binary (targeting macOS 10.15+)..."
@@ -374,6 +375,11 @@ if [ "$SKIP_BUILD" = "no" ]; then
         ls -lh "$UNIVERSAL_OUTPUT/rmmagent" | awk '{print "    Universal: " $5}'
     else
         # Build single architecture
+        # Create output directory and set ownership to actual user
+        OUTPUT_DIR="$(dirname "$BINARY_PATH")"
+        mkdir -p "$OUTPUT_DIR"
+        chown -R $SUDO_USER:staff "$REPO_DIR/build"
+
         # Set deployment target based on architecture
         if [ "$ARCH" = "arm64" ]; then
             DEPLOYMENT_TARGET="11.0"
