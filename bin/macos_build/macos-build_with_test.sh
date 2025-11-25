@@ -487,9 +487,16 @@ if [ "$DEPLOY_BUILD" = "yes" ]; then
         echo "  ✓ Directory created"
     fi
 
-    # Copy binary to deployment location
-    echo "  Copying binary to $DEPLOY_PATH..."
-    cp "$BINARY_PATH" "$DEPLOY_PATH"
+    # Delete existing binary if present
+    if [ -f "$DEPLOY_PATH" ]; then
+        echo "  Removing existing binary at $DEPLOY_PATH..."
+        rm -f "$DEPLOY_PATH"
+        echo "  ✓ Existing binary removed"
+    fi
+
+    # Copy binary to deployment location using ditto
+    echo "  Copying binary to $DEPLOY_PATH with ditto..."
+    ditto "$BINARY_PATH" "$DEPLOY_PATH"
     chmod 755 "$DEPLOY_PATH"
     echo "  ✓ Binary copied and permissions set"
 
